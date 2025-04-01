@@ -1,3 +1,6 @@
+# Import our DynamicalOperator class
+from dynamical_operator import DynamicalOperator
+
 import os
 import numpy as np
 import torch
@@ -7,9 +10,6 @@ import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from datetime import datetime
 from timeit import default_timer
-
-# Import our DynamicalOperator class
-from dynamical_operator import DynamicalOperator
 
 # Set random seeds for reproducibility
 np.random.seed(42)
@@ -117,23 +117,21 @@ def plot_lorenz_prediction(ground_truth, prediction, normalization, sample_idx=0
         sample_idx (int): Index of the sample to plot
         save_path (str): Path to save the figure, if None the figure is displayed
     """
-    # Convert to numpy and remove dummy spatial dimension
-    gt = ground_truth[sample_idx].detach().cpu().numpy()[:, 0, :]
-    pred = prediction[sample_idx].detach().cpu().numpy()[:, 0, :]
-    
+
     # Denormalize
-    mean = normalization['mean'][0, :, 0, 0]
-    std = normalization['std'][0, :, 0, 0]
-    gt_denorm = gt * std + mean
-    pred_denorm = pred * std + mean
-    
+    ground_truth_denorm = denormalize_data(ground_truth, normalization).squeeze(2).detach().cpu().numpy()
+    prediction_denorm = denormalize_data(prediction, normalization).squeeze(2).detach().cpu().numpy()
+
+    gt_denorm = ground_truth_denorm[sample_idx]
+    pred_denorm = prediction_denorm[sample_idx]
+
     # Create figure with 4 subplots
     fig = plt.figure(figsize=(20, 12))
     
     # 1. Time series plot for x
     ax1 = fig.add_subplot(2, 2, 1)
-    ax1.plot(gt_denorm[0], label='Ground Truth', color='blue')
-    ax1.plot(pred_denorm[0], label='Prediction', color='red', linestyle='--')
+    ax1.plot(gt_denorm[...,0], label='Ground Truth', color='blue')
+    ax1.plot(pred_denorm[...,0], label='Prediction', color='red', linestyle='--')
     ax1.set_title('X Coordinate')
     ax1.set_xlabel('Time Step')
     ax1.set_ylabel('Value')
@@ -142,8 +140,8 @@ def plot_lorenz_prediction(ground_truth, prediction, normalization, sample_idx=0
     
     # 2. Time series plot for y
     ax2 = fig.add_subplot(2, 2, 2)
-    ax2.plot(gt_denorm[1], label='Ground Truth', color='blue')
-    ax2.plot(pred_denorm[1], label='Prediction', color='red', linestyle='--')
+    ax2.plot(gt_denorm[...,1], label='Ground Truth', color='blue')
+    ax2.plot(pred_denorm[...,1], label='Prediction', color='red', linestyle='--')
     ax2.set_title('Y Coordinate')
     ax2.set_xlabel('Time Step')
     ax2.set_ylabel('Value')
@@ -152,8 +150,8 @@ def plot_lorenz_prediction(ground_truth, prediction, normalization, sample_idx=0
     
     # 3. Time series plot for z
     ax3 = fig.add_subplot(2, 2, 3)
-    ax3.plot(gt_denorm[2], label='Ground Truth', color='blue')
-    ax3.plot(pred_denorm[2], label='Prediction', color='red', linestyle='--')
+    ax3.plot(gt_denorm[...,2], label='Ground Truth', color='blue')
+    ax3.plot(pred_denorm[...,2], label='Prediction', color='red', linestyle='--')
     ax3.set_title('Z Coordinate')
     ax3.set_xlabel('Time Step')
     ax3.set_ylabel('Value')
@@ -162,8 +160,8 @@ def plot_lorenz_prediction(ground_truth, prediction, normalization, sample_idx=0
     
     # 4. 3D plot of the attractor
     ax4 = fig.add_subplot(2, 2, 4, projection='3d')
-    ax4.plot(gt_denorm[0], gt_denorm[1], gt_denorm[2], label='Ground Truth', color='blue')
-    ax4.plot(pred_denorm[0], pred_denorm[1], pred_denorm[2], label='Prediction', color='red', linestyle='--')
+    ax4.plot(gt_denorm[...,0], gt_denorm[...,1], gt_denorm[...,2], label='Ground Truth', color='blue')
+    ax4.plot(pred_denorm[...,0], pred_denorm[...,1], pred_denorm[...,2], label='Prediction', color='red', linestyle='--')
     ax4.set_title('Lorenz Attractor')
     ax4.set_xlabel('X')
     ax4.set_ylabel('Y')
@@ -208,6 +206,8 @@ def evaluate_model(model, test_data, time_horizon, prediction_length, normalizat
         
         for t in range(prediction_length):
             pred, _ = model.dyn_model.model(current_input)
+            if len(pred.shape) < 4:
+                pred = pred.unsqueeze(-2)
             predictions.append(pred[..., -1:])
             current_input = torch.cat((current_input[..., 1:], pred[..., -1:]), dim=-1)
         
@@ -266,7 +266,7 @@ def main():
         fourier_modes=fourier_modes,
         iterations=iterations,
         device=device,
-        architecture='DNO1d',  # Use 1D architecture for Lorenz
+        architecture='1dKNO',  # Use 1D architecture for Lorenz
         batch_size=batch_size,
         epochs=epochs,
         embedding_delay=1,

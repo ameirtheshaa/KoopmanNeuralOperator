@@ -1,3 +1,14 @@
+import os
+import math
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+from datetime import datetime
+from timeit import default_timer
+
 class DynamicalOperator:
     """
     DynamicalOperator: A class implementing Koopman-based neural operators for dynamical systems.
@@ -178,18 +189,18 @@ class DynamicalOperator:
                 self.scale * torch.rand(latent_dim, latent_dim, fourier_modes, dtype=torch.cfloat)
             )
 
-        def spectral_transform(self, input, weights):
+        def spectral_transform(self, input_, weights):
             """
             Applies complex multiplication for spectral evolution using Einstein summation.
             
             Args:
-                input (torch.Tensor): Input tensor of shape (batch, time, modes).
+                input_ (torch.Tensor): Input tensor of shape (batch, time, modes).
                 weights (torch.Tensor): Spectral matrix of shape (latent_dim, latent_dim, modes).
                 
             Returns:
                 torch.Tensor: Output tensor of shape (batch, latent_dim, modes).
             """
-            return torch.einsum("btx,tfx->bfx", input, weights)
+            return torch.einsum("btx,tfx->bfx", input_, weights)
 
         def forward(self, x):
             """
@@ -254,6 +265,8 @@ class DynamicalOperator:
             self.spectral_layer = DynamicalOperator.SpectralOperator1D(latent_dim, fourier_modes=fourier_modes)
             # Feature mixing layer
             self.feature_mixer = nn.Conv1d(latent_dim, latent_dim, kernel_size=1)
+            self.fourier_modes = fourier_modes
+            self.latent_dim = latent_dim
 
             if self.use_batch_norm:
                 self.norm = nn.BatchNorm1d(latent_dim)
@@ -278,9 +291,16 @@ class DynamicalOperator:
             # Prediction pathway
             latent = self.encoder(x)
             latent = torch.tanh(latent)
+
             # Permute to (batch, channels, length) for Conv1d operations
-            latent = latent.permute(0, 2, 1)
+            latent = latent.squeeze(-2).permute(0, 2, 1)
             initial_latent = latent.clone()
+
+            #Adjust Fourier Modes if needed
+            if self.fourier_modes > initial_latent.shape[-1]:
+                print (f'Warning - Truncating Fourier Modes from {self.fourier_modes} to {math.floor(initial_latent.shape[-1]/2) + 1}')
+                self.fourier_modes = math.floor(initial_latent.shape[-1]/2) + 1
+                self.spectral_layer = DynamicalOperator.SpectralOperator1D(self.latent_dim, fourier_modes=self.fourier_modes)
 
             # Apply the spectral operator iteratively
             for _ in range(self.iterations):
@@ -307,7 +327,7 @@ class DynamicalOperator:
         This inner class encapsulates model compilation, optimizer initialization,
         training, and saving/loading of dynamical systems models.
         """
-        def __init__(self, architecture="DNO2d", encoder_type="MLP", latent_dim=16, 
+        def __init__(self, architecture="1dKNO", encoder_type="MLP", latent_dim=16, 
                     fourier_modes=16, iterations=8, time_horizon=1, embedding_delay=1, 
                     use_linear=False, use_batch_norm=False, device='cpu'):
             self.architecture = architecture
@@ -333,14 +353,14 @@ class DynamicalOperator:
             encoder = DynamicalOperator.EncoderNetwork(self.time_horizon, self.latent_dim)
             decoder = DynamicalOperator.DecoderNetwork(self.time_horizon, self.latent_dim)
             
-            if self.architecture == "DNO2d":
+            if self.architecture == "2dKNO":
                 self.model = DynamicalOperator.DynamicalNetwork2D(
                     encoder, decoder, self.latent_dim,
                     fourier_modes_x=self.fourier_modes, fourier_modes_y=self.fourier_modes, 
                     iterations=self.iterations, use_linear=self.use_linear, 
                     use_batch_norm=self.use_batch_norm,
                 ).to(self.device)
-            elif self.architecture == "DNO1d":
+            elif self.architecture == "1dKNO":
                 self.model = DynamicalOperator.DynamicalNetwork1D(
                     encoder, decoder, self.latent_dim,
                     fourier_modes=self.fourier_modes, iterations=self.iterations,
@@ -406,10 +426,15 @@ class DynamicalOperator:
                         pred_frames.append(pred_frame)
 
                         # Update inputs by dropping oldest frames and appending prediction
+                        if len(prediction.shape) < 4:
+                            prediction = prediction.unsqueeze(-2)
                         inputs = torch.cat((inputs[..., step:], prediction[..., -step:]), dim=-1)
 
                     # Concatenate predicted frames along time dimension
                     predictions = torch.cat(pred_frames, dim=-1)
+                    if len(predictions.shape) < 4:
+                            predictions = predictions.unsqueeze(-2)
+
 
                     # Verify shapes match
                     if predictions.shape != targets_subsampled.shape:
@@ -466,7 +491,7 @@ class DynamicalOperator:
 
     # ========= Data Preparation, Training, and Prediction =========
     def __init__(self, training_data, time_horizon, latent_dim=16, fourier_modes=16, 
-                iterations=8, device='cpu', architecture='DNO2d', batch_size=32, 
+                iterations=8, device='cpu', architecture='2dKNO', batch_size=32, 
                 epochs=1, embedding_delay=1, use_linear=False, use_batch_norm=False, 
                 data_dir='.', results_dir='results'):
         """
@@ -479,7 +504,7 @@ class DynamicalOperator:
             fourier_modes (int): Number of Fourier modes to use.
             iterations (int): Number of iterative operator applications.
             device (str): Device to use for computation ('cpu' or 'cuda').
-            architecture (str): Architecture to use ('DNO2d' or 'DNO1d').
+            architecture (str): Architecture to use ('2dKNO' or '1dKNO').
             batch_size (int): Batch size for training.
             epochs (int): Number of training epochs.
             embedding_delay (int): Delay for embedding.
